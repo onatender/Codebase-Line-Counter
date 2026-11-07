@@ -36,10 +36,11 @@ codebase --summary       # sadece özet
 codebase -x tests        # bir klasörü hariç tut
 codebase --no-git        # git'i yok say
 codebase --only .cpp,.h  # sadece bu uzantılar
+codebase --skip .html    # bu uzantıları sayma
 codebase --list          # tanınan uzantılar
 ```
 
-## Listede olmayan bir uzantı eklemek
+## Uzantı eklemek ve çıkarmak
 
 Tek seferlik:
 
@@ -49,12 +50,17 @@ codebase -e .zig:Zig://
 
 Biçim `.uzantı:Dil adı:yorum işareti`. Dil adı ve yorum işareti yazılmayabilir. Yorum işareti `//` verilirse `/* */` blokları da yorum sayılıyor.
 
-Kalıcı olsun istersen `~/.config/codebase/extensions` dosyasına her satıra bir tane yaz:
+Bir uzantıyı o seferlik saymamak için `codebase --skip .html,.css`.
+
+Kalıcı olsun istersen `~/.config/codebase/extensions` dosyasına her satıra bir tane yaz. Başına `-` koyduğun satır o uzantıyı listeden çıkarıyor:
 
 ```
 .zig:Zig://
 .nim:Nim:#
 .asm:Assembly:;
+-.html
+-.css
+-Dockerfile
 ```
 
 Var olan bir uzantıyı da buradan farklı bir dil adıyla yeniden tanımlayabilirsin.
@@ -72,3 +78,5 @@ TOPLAM               408  67.513  58.425  2.881  6.207  2.719.799  100.0%
 ```
 
 Not: yorum satırı tespiti basit. Satır `//`, `/*`, `#` ile başlıyorsa yorum sayılıyor, kodun sonundaki yorumlar kod satırı olarak kalıyor. C'deki `#include` satırları da bu yüzden yorum sayılıyor.
+
+Değişiklikler için [CHANGELOG.md](CHANGELOG.md).

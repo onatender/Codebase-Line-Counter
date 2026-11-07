@@ -11,8 +11,10 @@ Kullanım:
     codebase -e .zig:Zig://  # listede olmayan bir uzantıyı da say
     codebase --list          # tanınan uzantıları göster
 
-Kalıcı ek uzantılar için ~/.config/codebase/extensions dosyasına her satıra
-bir tanım yazılır, örn:  .zig:Zig://
+    codebase --skip .html    # bir uzantıyı sayma
+
+Kalıcı ayar için ~/.config/codebase/extensions dosyasına her satıra bir
+tanım yazılır. Eklemek için  .zig:Zig://  çıkarmak için  -.html
 
 Git deposu içindeyse sadece git'in takip ettiği + .gitignore'a takılmayan
 dosyalar sayılır (build çıktıları vb. otomatik elenir). Değilse klasör
@@ -132,13 +134,29 @@ def add_ext(spec, source):
     LANGS[ext] = (name, style)
 
 
+def remove_ext(spec):
+    """'.ext' ya da 'Dockerfile' gibi bir tanımı sayımdan çıkarır."""
+    spec = spec.strip()
+    if spec in NAMED:
+        del NAMED[spec]
+        return
+    ext = spec.lower()
+    if not ext.startswith("."):
+        ext = "." + ext
+    LANGS.pop(ext, None)
+
+
 def load_config():
     if not os.path.isfile(CONFIG_FILE):
         return
     with open(CONFIG_FILE, encoding="utf-8") as fh:
         for n, line in enumerate(fh, 1):
             line = line.strip()
-            if line and not line.startswith("#"):
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("-"):
+                remove_ext(line[1:])
+            else:
                 add_ext(line, f"{CONFIG_FILE}:{n}")
 
 
@@ -240,6 +258,8 @@ def main():
                     help="ek uzantı say: .ext[:Ad[:yorum]], örn. -e .zig:Zig://")
     ap.add_argument("--only", metavar="UZANTILAR",
                     help="sadece bu uzantıları say, virgülle: --only .cpp,.h")
+    ap.add_argument("--skip", metavar="UZANTILAR",
+                    help="bu uzantıları sayma, virgülle: --skip .html,.css")
     ap.add_argument("--list", action="store_true", help="tanınan uzantıları listele")
     args = ap.parse_args()
 
@@ -247,6 +267,9 @@ def main():
     load_config()
     for spec in args.ext:
         add_ext(spec, "-e")
+    for spec in (args.skip or "").split(","):
+        if spec.strip():
+            remove_ext(spec)
 
     if args.list:
         by_lang = defaultdict(list)
