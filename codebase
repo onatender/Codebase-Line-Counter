@@ -8,6 +8,11 @@ Kullanım:
     codebase --summary       # sadece özet tabloları göster
     codebase -x vendor -x 3rdparty   # ek klasör/desen hariç tut
     codebase --no-git        # git'i yok say, klasörü doğrudan gez
+    codebase -e .zig:Zig://  # listede olmayan bir uzantıyı da say
+    codebase --list          # tanınan uzantıları göster
+
+Kalıcı ek uzantılar için ~/.config/codebase/extensions dosyasına her satıra
+bir tanım yazılır, örn:  .zig:Zig://
 
 Git deposu içindeyse sadece git'in takip ettiği + .gitignore'a takılmayan
 dosyalar sayılır (build çıktıları vb. otomatik elenir). Değilse klasör
@@ -21,54 +26,127 @@ import subprocess
 import sys
 from collections import defaultdict
 
-# uzantı -> (dil adı, satır yorumu, blok yorum başlangıç, bitiş)
-C_STYLE = ("//", "/*", "*/")
-HASH = ("#", None, None)
-LANGS = {
-    ".cpp": ("C++ (.cpp)", *C_STYLE),
-    ".cc": ("C++ (.cpp)", *C_STYLE),
-    ".cxx": ("C++ (.cpp)", *C_STYLE),
-    ".h": ("Header (.h)", *C_STYLE),
-    ".hpp": ("Header (.h)", *C_STYLE),
-    ".hh": ("Header (.h)", *C_STYLE),
-    ".hxx": ("Header (.h)", *C_STYLE),
-    ".c": ("C (.c)", *C_STYLE),
-    ".qml": ("QML", *C_STYLE),
-    ".js": ("JavaScript", *C_STYLE),
-    ".py": ("Python (.py/.pyw)", *HASH),
-    ".pyw": ("Python (.py/.pyw)", *HASH),
-    ".sh": ("Shell (.sh)", *HASH),
-    ".bash": ("Shell (.sh)", *HASH),
-    ".bat": ("Batch (.bat/.cmd)", "rem", None, None),
-    ".cmd": ("Batch (.bat/.cmd)", "rem", None, None),
-    ".cmake": ("CMake", *HASH),
+# Yorum stilleri: (satır yorumu önekleri, blok başlangıç, blok bitiş)
+C_STYLE = (("//",), "/*", "*/")
+HASH = (("#",), None, None)
+STYLES = {
+    "c": C_STYLE,
+    "hash": HASH,
+    "html": ((), "<!--", "-->"),
+    "css": ((), "/*", "*/"),
+    "sql": (("--",), "/*", "*/"),
+    "lua": (("--",), "--[[", "]]"),
+    "php": (("//", "#"), "/*", "*/"),
+    "ps1": (("#",), "<#", "#>"),
+    "bat": (("rem ", "@rem ", "::"), None, None),
+    "none": ((), None, None),
 }
-# uzantısız, adıyla tanınan dosyalar
+
+# Varsayılan diller: dil adı -> (yorum stili, uzantılar)
+DEFAULT_LANGS = {
+    "C++ (.cpp)": ("c", ".cpp .cc .cxx .c++"),
+    "Header (.h)": ("c", ".h .hpp .hh .hxx .inl"),
+    "C (.c)": ("c", ".c"),
+    "C#": ("c", ".cs"),
+    "Java": ("c", ".java"),
+    "Kotlin": ("c", ".kt .kts"),
+    "Go": ("c", ".go"),
+    "Rust": ("c", ".rs"),
+    "Swift": ("c", ".swift"),
+    "Dart": ("c", ".dart"),
+    "QML": ("c", ".qml"),
+    "JavaScript": ("c", ".js .jsx .mjs .cjs"),
+    "TypeScript": ("c", ".ts .tsx"),
+    "HTML": ("html", ".html .htm"),
+    "Vue": ("html", ".vue"),
+    "CSS": ("css", ".css"),
+    "SCSS/Sass/Less": ("c", ".scss .sass .less"),
+    "PHP": ("php", ".php"),
+    "Python (.py/.pyw)": ("hash", ".py .pyw"),
+    "Ruby": ("hash", ".rb"),
+    "Perl": ("hash", ".pl .pm"),
+    "R": ("hash", ".r"),
+    "Shell (.sh)": ("hash", ".sh .bash .zsh"),
+    "PowerShell": ("ps1", ".ps1 .psm1"),
+    "Batch (.bat/.cmd)": ("bat", ".bat .cmd"),
+    "Lua": ("lua", ".lua"),
+    "SQL": ("sql", ".sql"),
+    "CMake": ("hash", ".cmake"),
+}
+# Uzantısı olmayan ya da adıyla tanınan dosyalar
 NAMED = {
-    "CMakeLists.txt": "CMake",
+    "CMakeLists.txt": ("CMake", "hash"),
+    "Makefile": ("Makefile", "hash"),
+    "Dockerfile": ("Dockerfile", "hash"),
 }
+
+# Kullanıcının kendi uzantıları bu dosyadan okunur (satır başına bir tane)
+CONFIG_FILE = os.path.join(
+    os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+    "codebase", "extensions")
 
 # git dışı modda atlanacak klasörler/desenler
 DEFAULT_EXCLUDES = [
-    ".git", ".svn", ".hg", ".idea", ".vscode", ".cache",
-    "build", "build-*", "*-build", "cmake-build-*", "out", "dist",
-    "node_modules", "__pycache__", "venv", ".venv", "env", ".tox",
-    "*.egg-info", "debian", ".*", "third_party", "3rdparty", "vendor",
+    ".*", "build", "build-*", "*-build", "cmake-build-*", "out", "dist",
+    "node_modules", "__pycache__", "venv", "env", "*.egg-info", "debian",
+    "third_party", "3rdparty", "vendor", "obj", "target",
 ]
 # her iki modda atlanan, araçların ürettiği dosyalar
-GENERATED = ["moc_*", "ui_*.h", "qrc_*", "*.pb.h", "*.pb.cc", "*_autogen*"]
+GENERATED = ["moc_*", "ui_*.h", "qrc_*", "*.pb.h", "*.pb.cc", "*_autogen*",
+             "*.min.js", "*.min.css", "*.designer.cs"]
+
+LANGS = {}  # uzantı -> (dil adı, yorum stili); main() içinde doldurulur
+
+
+def build_langs():
+    for name, (style, exts) in DEFAULT_LANGS.items():
+        for ext in exts.split():
+            LANGS[ext] = (name, STYLES[style])
+
+
+def add_ext(spec, source):
+    """'.ext', '.ext:Ad' veya '.ext:Ad:yorum' biçimindeki tanımı ekler.
+
+    yorum: satır yorumu işareti (//, #, --, ;, % ...) ya da stil adı
+    (c, hash, html, css, sql, lua, php, ps1, bat, none). '//' verilirse
+    /* */ blokları da yorum sayılır.
+    """
+    parts = [x.strip() for x in spec.split(":", 2)]
+    ext = parts[0].lower()
+    if not ext:
+        sys.exit(f"codebase: geçersiz uzantı tanımı ({source}): {spec}")
+    if not ext.startswith("."):
+        ext = "." + ext
+    name = parts[1] if len(parts) > 1 and parts[1] else ext[1:].upper()
+    marker = parts[2] if len(parts) > 2 else ""
+    if marker in STYLES:
+        style = STYLES[marker]
+    elif marker == "//":
+        style = C_STYLE
+    elif marker:
+        style = ((marker,), None, None)
+    elif ext in LANGS:
+        style = LANGS[ext][1]
+    else:
+        style = STYLES["none"]
+    LANGS[ext] = (name, style)
+
+
+def load_config():
+    if not os.path.isfile(CONFIG_FILE):
+        return
+    with open(CONFIG_FILE, encoding="utf-8") as fh:
+        for n, line in enumerate(fh, 1):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                add_ext(line, f"{CONFIG_FILE}:{n}")
 
 
 def lang_of(name):
     if name in NAMED:
-        return NAMED[name]
-    return LANGS.get(os.path.splitext(name)[1].lower(), (None,))[0]
-
-
-def comment_rules(name):
-    if name in NAMED:
-        return HASH
-    return LANGS[os.path.splitext(name)[1].lower()][1:]
+        lang, style = NAMED[name]
+        return lang, STYLES[style]
+    return LANGS.get(os.path.splitext(name)[1].lower())
 
 
 def matches(path, patterns):
@@ -97,8 +175,8 @@ def walk_files(root, excludes):
             yield os.path.relpath(os.path.join(dirpath, f), root)
 
 
-def analyze(path, name):
-    line_c, block_s, block_e = comment_rules(name)
+def analyze(path, style):
+    prefixes, block_s, block_e = style
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             text = fh.read()
@@ -122,13 +200,9 @@ def analyze(path, name):
             if block_e not in s[len(block_s):]:
                 in_block = True
             continue
-        if line_c and (s.lower().startswith(line_c) if line_c == "rem"
-                       else s.startswith(line_c)):
+        low = s.lower() + " "  # "rem" tek başına da eşleşsin
+        if any(low.startswith(p.lower()) for p in prefixes):
             comment += 1
-            continue
-        if line_c == "rem" and s.startswith("::"):
-            comment += 1
-            continue
     total = len(lines)
     return {
         "lines": total, "code": total - blank - comment, "comment": comment,
@@ -162,7 +236,34 @@ def main():
     ap.add_argument("-x", "--exclude", action="append", default=[],
                     help="hariç tutulacak klasör/dosya deseni (tekrarlanabilir)")
     ap.add_argument("--no-git", action="store_true", help="git ls-files kullanma")
+    ap.add_argument("-e", "--ext", action="append", default=[], metavar="TANIM",
+                    help="ek uzantı say: .ext[:Ad[:yorum]], örn. -e .zig:Zig://")
+    ap.add_argument("--only", metavar="UZANTILAR",
+                    help="sadece bu uzantıları say, virgülle: --only .cpp,.h")
+    ap.add_argument("--list", action="store_true", help="tanınan uzantıları listele")
     args = ap.parse_args()
+
+    build_langs()
+    load_config()
+    for spec in args.ext:
+        add_ext(spec, "-e")
+
+    if args.list:
+        by_lang = defaultdict(list)
+        for ext, (lang, _) in LANGS.items():
+            by_lang[lang].append(ext)
+        for name, (lang, _) in NAMED.items():
+            by_lang[lang].append(name)
+        for lang in sorted(by_lang, key=str.lower):
+            print(f"{lang:20} {' '.join(by_lang[lang])}")
+        print(f"\nAyar dosyası: {CONFIG_FILE}"
+              + ("" if os.path.isfile(CONFIG_FILE) else " (yok)"))
+        return
+
+    only = None
+    if args.only:
+        only = {("" if e.strip().startswith(".") else ".") + e.strip().lower()
+                for e in args.only.split(",") if e.strip()}
 
     root = os.path.abspath(os.path.expanduser(args.path))
     if not os.path.isdir(root):
@@ -177,10 +278,13 @@ def main():
     results = []
     for rel in files:
         name = os.path.basename(rel)
-        lang = lang_of(name)
-        if not lang or matches(rel, GENERATED + args.exclude):
+        found = lang_of(name)
+        if not found or matches(rel, GENERATED + args.exclude):
             continue
-        st = analyze(os.path.join(root, rel), name)
+        if only is not None and os.path.splitext(name)[1].lower() not in only:
+            continue
+        lang, style = found
+        st = analyze(os.path.join(root, rel), style)
         if st:
             results.append((rel, lang, st))
 

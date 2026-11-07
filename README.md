@@ -6,11 +6,9 @@ Kendi projelerimde "ne kadar kod yazmışım" sorusuna hızlıca cevap almak iç
 
 ## Ne sayıyor
 
-- C++ (.cpp, .cc, .cxx), header (.h, .hpp), C (.c)
-- QML, JavaScript
-- Python (.py, .pyw)
-- Shell (.sh), Batch (.bat, .cmd)
-- CMake (CMakeLists.txt, .cmake)
+Varsayılan olarak tanıdığı diller: C, C++, header, C#, Java, Kotlin, Go, Rust, Swift, Dart, QML, JavaScript, TypeScript, HTML, Vue, CSS, SCSS/Sass/Less, PHP, Python, Ruby, Perl, R, Shell, PowerShell, Batch, Lua, SQL, CMake, Makefile, Dockerfile.
+
+Tam liste için `codebase --list`.
 
 Her dosya için toplam satır, kod, yorum, boş satır ve karakter sayısı; sonunda da dile göre bir özet tablo çıkarıyor.
 
@@ -37,7 +35,29 @@ codebase -s lines        # en uzun dosyalar üstte
 codebase --summary       # sadece özet
 codebase -x tests        # bir klasörü hariç tut
 codebase --no-git        # git'i yok say
+codebase --only .cpp,.h  # sadece bu uzantılar
+codebase --list          # tanınan uzantılar
 ```
+
+## Listede olmayan bir uzantı eklemek
+
+Tek seferlik:
+
+```
+codebase -e .zig:Zig://
+```
+
+Biçim `.uzantı:Dil adı:yorum işareti`. Dil adı ve yorum işareti yazılmayabilir. Yorum işareti `//` verilirse `/* */` blokları da yorum sayılıyor.
+
+Kalıcı olsun istersen `~/.config/codebase/extensions` dosyasına her satıra bir tane yaz:
+
+```
+.zig:Zig://
+.nim:Nim:#
+.asm:Assembly:;
+```
+
+Var olan bir uzantıyı da buradan farklı bir dil adıyla yeniden tanımlayabilirsin.
 
 Örnek özet:
 
