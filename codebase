@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""codebase - bir proje klasöründeki geliştirici dosyalarının satır/karakter istatistiği.
+
+Kullanım:
+    codebase                 # bulunduğun klasörü tara
+    codebase ~/proje         # verilen klasörü tara
+    codebase -s lines        # dosyaları satır sayısına göre sırala
+    codebase --summary       # sadece özet tabloları göster
+    codebase -x vendor -x 3rdparty   # ek klasör/desen hariç tut
+    codebase --no-git        # git'i yok say, klasörü doğrudan gez
+
+Git deposu içindeyse sadece git'in takip ettiği + .gitignore'a takılmayan
+dosyalar sayılır (build çıktıları vb. otomatik elenir). Değilse klasör
+gezilir ve bilinen build/üretilmiş klasörler atlanır.
+"""
+
+import argparse
+import fnmatch
+import os
+import subprocess
+import sys
+from collections import defaultdict
+
+# uzantı -> (dil adı, satır yorumu, blok yorum başlangıç, bitiş)
+C_STYLE = ("//", "/*", "*/")
+HASH = ("#", None, None)
+LANGS = {
+    ".cpp": ("C++ (.cpp)", *C_STYLE),
+    ".cc": ("C++ (.cpp)", *C_STYLE),
+    ".cxx": ("C++ (.cpp)", *C_STYLE),
+    ".h": ("Header (.h)", *C_STYLE),
+    ".hpp": ("Header (.h)", *C_STYLE),
+    ".hh": ("Header (.h)", *C_STYLE),
+    ".hxx": ("Header (.h)", *C_STYLE),
+    ".c": ("C (.c)", *C_STYLE),
+    ".qml": ("QML", *C_STYLE),
+    ".js": ("JavaScript", *C_STYLE),
+    ".py": ("Python (.py/.pyw)", *HASH),
+    ".pyw": ("Python (.py/.pyw)", *HASH),
+    ".sh": ("Shell (.sh)", *HASH),
+    ".bash": ("Shell (.sh)", *HASH),
+    ".bat": ("Batch (.bat/.cmd)", "rem", None, None),
+    ".cmd": ("Batch (.bat/.cmd)", "rem", None, None),
+    ".cmake": ("CMake", *HASH),
+}
+# uzantısız, adıyla tanınan dosyalar
+NAMED = {
+    "CMakeLists.txt": "CMake",
+}
+
+# git dışı modda atlanacak klasörler/desenler
+DEFAULT_EXCLUDES = [
+    ".git", ".svn", ".hg", ".idea", ".vscode", ".cache",
+    "build", "build-*", "*-build", "cmake-build-*", "out", "dist",
+    "node_modules", "__pycache__", "venv", ".venv", "env", ".tox",
+    "*.egg-info", "debian", ".*", "third_party", "3rdparty", "vendor",
+]
+# her iki modda atlanan, araçların ürettiği dosyalar
+GENERATED = ["moc_*", "ui_*.h", "qrc_*", "*.pb.h", "*.pb.cc", "*_autogen*"]
+
+
+def lang_of(name):
+    if name in NAMED:
+        return NAMED[name]
+    return LANGS.get(os.path.splitext(name)[1].lower(), (None,))[0]
+
+
+def comment_rules(name):
+    if name in NAMED:
+        return HASH
+    return LANGS[os.path.splitext(name)[1].lower()][1:]
+
+
+def matches(path, patterns):
+    parts = path.replace("\\", "/").split("/")
+    return any(fnmatch.fnmatch(p, pat) for p in parts for pat in patterns)
+
+
+def git_files(root):
+    try:
+        out = subprocess.run(
+            ["git", "-C", root, "ls-files", "-z", "--cached", "--others",
+             "--exclude-standard"],
+            capture_output=True, check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    files = [f for f in out.decode("utf-8", "replace").split("\0") if f]
+    return [f for f in files if os.path.isfile(os.path.join(root, f))]
+
+
+def walk_files(root, excludes):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = sorted(d for d in dirnames
+                             if not any(fnmatch.fnmatch(d, p) for p in excludes))
+        for f in filenames:
+            yield os.path.relpath(os.path.join(dirpath, f), root)
+
+
+def analyze(path, name):
+    line_c, block_s, block_e = comment_rules(name)
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    lines = text.splitlines()
+    blank = comment = 0
+    in_block = False
+    for raw in lines:
+        s = raw.strip()
+        if not s:
+            blank += 1
+            continue
+        if in_block:
+            comment += 1
+            if block_e in s:
+                in_block = False
+            continue
+        if block_s and s.startswith(block_s):
+            comment += 1
+            if block_e not in s[len(block_s):]:
+                in_block = True
+            continue
+        if line_c and (s.lower().startswith(line_c) if line_c == "rem"
+                       else s.startswith(line_c)):
+            comment += 1
+            continue
+        if line_c == "rem" and s.startswith("::"):
+            comment += 1
+            continue
+    total = len(lines)
+    return {
+        "lines": total, "code": total - blank - comment, "comment": comment,
+        "blank": blank, "chars": len(text), "bytes": os.path.getsize(path),
+    }
+
+
+def fmt(n):
+    return f"{n:,}".replace(",", ".")
+
+
+def table(headers, rows, align):
+    widths = [max(len(str(h)), *(len(str(r[i])) for r in rows)) if rows else len(h)
+              for i, h in enumerate(headers)]
+
+    def line(cells):
+        return "  ".join(str(c).ljust(w) if a == "l" else str(c).rjust(w)
+                         for c, w, a in zip(cells, widths, align))
+    print(line(headers))
+    print("  ".join("-" * w for w in widths))
+    for r in rows:
+        print(line(r))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Kod tabanı satır/karakter istatistiği")
+    ap.add_argument("path", nargs="?", default=".", help="taranacak klasör (varsayılan: .)")
+    ap.add_argument("-s", "--sort", choices=["path", "lines", "code", "chars"],
+                    default="path", help="dosya listesi sıralaması")
+    ap.add_argument("--summary", action="store_true", help="dosya listesini gösterme")
+    ap.add_argument("-x", "--exclude", action="append", default=[],
+                    help="hariç tutulacak klasör/dosya deseni (tekrarlanabilir)")
+    ap.add_argument("--no-git", action="store_true", help="git ls-files kullanma")
+    args = ap.parse_args()
+
+    root = os.path.abspath(os.path.expanduser(args.path))
+    if not os.path.isdir(root):
+        sys.exit(f"codebase: klasör yok: {root}")
+
+    files = None if args.no_git else git_files(root)
+    mode = "git (takip edilen + ignore edilmemiş dosyalar)"
+    if files is None:
+        files = list(walk_files(root, DEFAULT_EXCLUDES + args.exclude))
+        mode = "klasör taraması (build/venv vb. hariç)"
+
+    results = []
+    for rel in files:
+        name = os.path.basename(rel)
+        lang = lang_of(name)
+        if not lang or matches(rel, GENERATED + args.exclude):
+            continue
+        st = analyze(os.path.join(root, rel), name)
+        if st:
+            results.append((rel, lang, st))
+
+    if not results:
+        print(f"{root}: sayılacak kaynak dosyası bulunamadı.")
+        return
+
+    key = {"path": lambda r: r[0].lower(),
+           "lines": lambda r: -r[2]["lines"],
+           "code": lambda r: -r[2]["code"],
+           "chars": lambda r: -r[2]["chars"]}[args.sort]
+    results.sort(key=key)
+
+    print(f"Proje : {root}")
+    print(f"Mod   : {mode}\n")
+
+    if not args.summary:
+        table(["Dosya", "Dil", "Satır", "Kod", "Yorum", "Boş", "Karakter"],
+              [(r, l, fmt(s["lines"]), fmt(s["code"]), fmt(s["comment"]),
+                fmt(s["blank"]), fmt(s["chars"])) for r, l, s in results],
+              "llrrrrr")
+        print()
+
+    agg = defaultdict(lambda: defaultdict(int))
+    for _, lang, st in results:
+        agg[lang]["files"] += 1
+        for k, v in st.items():
+            agg[lang][k] += v
+    tot = defaultdict(int)
+    for a in agg.values():
+        for k, v in a.items():
+            tot[k] += v
+
+    rows = []
+    for lang, a in sorted(agg.items(), key=lambda kv: -kv[1]["lines"]):
+        pct = 100.0 * a["lines"] / tot["lines"] if tot["lines"] else 0
+        rows.append((lang, fmt(a["files"]), fmt(a["lines"]), fmt(a["code"]),
+                     fmt(a["comment"]), fmt(a["blank"]), fmt(a["chars"]),
+                     f"{pct:5.1f}%"))
+    rows.append(("TOPLAM", fmt(tot["files"]), fmt(tot["lines"]), fmt(tot["code"]),
+                 fmt(tot["comment"]), fmt(tot["blank"]), fmt(tot["chars"]), "100.0%"))
+    print("ÖZET (dile göre)")
+    table(["Dil", "Dosya", "Satır", "Kod", "Yorum", "Boş", "Karakter", "Pay"],
+          rows, "lrrrrrrr")
+
+    biggest = max(results, key=lambda r: r[2]["lines"])
+    print(f"\nEn büyük dosya : {biggest[0]} ({fmt(biggest[2]['lines'])} satır)")
+    print(f"Ortalama       : {fmt(tot['lines'] // tot['files'])} satır/dosya")
+    print(f"Toplam boyut   : {tot['bytes'] / 1024:.1f} KB")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except BrokenPipeError:
+        sys.stderr.close()
