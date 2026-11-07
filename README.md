@@ -1,4 +1,4 @@
-# codebase-line-counter
+# Codebase-Line-Counter
 
 Bir proje klasöründeki kaynak dosyaları gezip her dosyanın kaç satır olduğunu, toplamda hangi dilde ne kadar kod yazıldığını gösteren küçük bir Python scripti.
 
@@ -21,9 +21,9 @@ Klasör bir git reposuysa sadece git'in takip ettiği dosyalara bakıyor, yani b
 Python 3 dışında bir şey gerekmiyor.
 
 ```
-git clone https://github.com/onatender/codebase-line-counter.git
-chmod +x codebase-line-counter/codebase
-ln -s "$PWD/codebase-line-counter/codebase" ~/.local/bin/codebase
+git clone https://github.com/onatender/Codebase-Line-Counter.git
+chmod +x Codebase-Line-Counter/codebase
+ln -s "$PWD/Codebase-Line-Counter/codebase" ~/.local/bin/codebase
 ```
 
 `~/.local/bin` PATH'te olmalı.
