@@ -1,5 +1,12 @@
 # Değişiklikler
 
+## 1.3 - 2026-11-07
+
+- Varsayılan çıktı artık sadece özet tablo. Dosya bazlı liste için `-d` / `--detailed`. `--summary` kaldırıldı.
+- `--add` ve `--remove` ile uzantılar ayar dosyasını elle açmadan kalıcı eklenip çıkarılabiliyor.
+- `--list` kalıcı ayarları da gösteriyor.
+- Linux/macOS için `install.sh`, Windows için `codebase.bat` eklendi. README'ye PATH'e ekleme adımları yazıldı.
+
 ## 1.2 - 2026-11-07
 
 - `--skip .html,.css` ile istenmeyen uzantılar o seferlik sayılmıyor.

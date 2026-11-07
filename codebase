@@ -2,19 +2,21 @@
 """codebase - bir proje klasöründeki geliştirici dosyalarının satır/karakter istatistiği.
 
 Kullanım:
-    codebase                 # bulunduğun klasörü tara
-    codebase ~/proje         # verilen klasörü tara
-    codebase -s lines        # dosyaları satır sayısına göre sırala
-    codebase --summary       # sadece özet tabloları göster
-    codebase -x vendor -x 3rdparty   # ek klasör/desen hariç tut
+    codebase                 # bulunduğun klasörün özeti
+    codebase ~/proje         # başka bir klasör
+    codebase -d              # dosya bazlı detaylı liste de göster
+    codebase -d -s lines     # detaylı listeyi satır sayısına göre sırala
+    codebase -x tests        # klasör/dosya deseni hariç tut
     codebase --no-git        # git'i yok say, klasörü doğrudan gez
-    codebase -e .zig:Zig://  # listede olmayan bir uzantıyı da say
-    codebase --list          # tanınan uzantıları göster
+    codebase --only .cpp,.h  # sadece bu uzantılar
+    codebase -e .zig:Zig://  # bu seferlik ek uzantı say
+    codebase --skip .html    # bu seferlik uzantı sayma
+    codebase --add .zig:Zig://   # uzantıyı kalıcı ekle
+    codebase --remove .html      # uzantıyı kalıcı çıkar
+    codebase --list          # tanınan uzantılar ve kalıcı ayarlar
 
-    codebase --skip .html    # bir uzantıyı sayma
-
-Kalıcı ayar için ~/.config/codebase/extensions dosyasına her satıra bir
-tanım yazılır. Eklemek için  .zig:Zig://  çıkarmak için  -.html
+Kalıcı ayarlar ~/.config/codebase/extensions dosyasında tutulur, elle de
+düzenlenebilir: ekleme için  .zig:Zig://  çıkarma için  -.html
 
 Git deposu içindeyse sadece git'in takip ettiği + .gitignore'a takılmayan
 dosyalar sayılır (build çıktıları vb. otomatik elenir). Değilse klasör
@@ -82,6 +84,8 @@ NAMED = {
     "Dockerfile": ("Dockerfile", "hash"),
 }
 
+DEFAULT_NAMED = set(NAMED)
+
 # Kullanıcının kendi uzantıları bu dosyadan okunur (satır başına bir tane)
 CONFIG_FILE = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
@@ -119,7 +123,10 @@ def add_ext(spec, source):
         sys.exit(f"codebase: geçersiz uzantı tanımı ({source}): {spec}")
     if not ext.startswith("."):
         ext = "." + ext
-    name = parts[1] if len(parts) > 1 and parts[1] else ext[1:].upper()
+    if len(parts) > 1 and parts[1]:
+        name = parts[1]
+    else:
+        name = LANGS[ext][0] if ext in LANGS else ext[1:].upper()
     marker = parts[2] if len(parts) > 2 else ""
     if marker in STYLES:
         style = STYLES[marker]
@@ -158,6 +165,45 @@ def load_config():
                 remove_ext(line[1:])
             else:
                 add_ext(line, f"{CONFIG_FILE}:{n}")
+
+
+def norm_key(spec):
+    """Tanımın uzantı/dosya adı kısmını karşılaştırma için normalleştirir."""
+    key = spec.strip().lstrip("-").split(":", 1)[0].strip()
+    if key in NAMED or key in DEFAULT_NAMED:
+        return key
+    key = key.lower()
+    return key if key.startswith(".") else "." + key
+
+
+def save_config(add=(), remove=()):
+    lines = []
+    if os.path.isfile(CONFIG_FILE):
+        with open(CONFIG_FILE, encoding="utf-8") as fh:
+            lines = [l.rstrip("\n") for l in fh]
+    defaults = set(LANGS) | set(NAMED)  # load_config'den önce çağrılır
+    changes = []
+    for spec, removing in [(x, False) for x in add] + [(x, True) for x in remove]:
+        key = norm_key(spec)
+        lines = [l for l in lines
+                 if not l.strip() or l.strip().startswith("#")
+                 or norm_key(l) != key]
+        if removing:
+            if key in defaults:
+                lines.append("-" + key)
+            changes.append(f"çıkarıldı: {key}")
+        elif key in defaults and ":" not in spec:
+            changes.append(f"varsayılana döndü: {key}")  # sadece '-' satırı silinir
+        else:
+            add_ext(spec, "--add")  # biçimi doğrula
+            lines.append(spec.strip())
+            changes.append(f"eklendi  : {spec.strip()}")
+    os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + ("\n" if lines else ""))
+    for c in changes:
+        print(c)
+    print(f"Ayar dosyası: {CONFIG_FILE}")
 
 
 def lang_of(name):
@@ -249,8 +295,9 @@ def main():
     ap = argparse.ArgumentParser(description="Kod tabanı satır/karakter istatistiği")
     ap.add_argument("path", nargs="?", default=".", help="taranacak klasör (varsayılan: .)")
     ap.add_argument("-s", "--sort", choices=["path", "lines", "code", "chars"],
-                    default="path", help="dosya listesi sıralaması")
-    ap.add_argument("--summary", action="store_true", help="dosya listesini gösterme")
+                    default="path", help="detaylı listenin sıralaması (-d ile)")
+    ap.add_argument("-d", "--detailed", action="store_true",
+                    help="özetin yanında dosya bazlı listeyi de göster")
     ap.add_argument("-x", "--exclude", action="append", default=[],
                     help="hariç tutulacak klasör/dosya deseni (tekrarlanabilir)")
     ap.add_argument("--no-git", action="store_true", help="git ls-files kullanma")
@@ -260,10 +307,18 @@ def main():
                     help="sadece bu uzantıları say, virgülle: --only .cpp,.h")
     ap.add_argument("--skip", metavar="UZANTILAR",
                     help="bu uzantıları sayma, virgülle: --skip .html,.css")
+    ap.add_argument("--add", action="append", default=[], metavar="TANIM",
+                    help="uzantıyı kalıcı ekle: --add .zig:Zig://")
+    ap.add_argument("--remove", action="append", default=[], metavar="UZANTI",
+                    help="uzantıyı kalıcı çıkar: --remove .html")
     ap.add_argument("--list", action="store_true", help="tanınan uzantıları listele")
     args = ap.parse_args()
 
     build_langs()
+    if args.add or args.remove:
+        rem = [x for r in args.remove for x in r.split(",") if x.strip()]
+        save_config(args.add, rem)
+        return
     load_config()
     for spec in args.ext:
         add_ext(spec, "-e")
@@ -279,8 +334,13 @@ def main():
             by_lang[lang].append(name)
         for lang in sorted(by_lang, key=str.lower):
             print(f"{lang:20} {' '.join(by_lang[lang])}")
-        print(f"\nAyar dosyası: {CONFIG_FILE}"
-              + ("" if os.path.isfile(CONFIG_FILE) else " (yok)"))
+        print(f"\nAyar dosyası: {CONFIG_FILE}")
+        rules = []
+        if os.path.isfile(CONFIG_FILE):
+            with open(CONFIG_FILE, encoding="utf-8") as fh:
+                rules = [l.strip() for l in fh
+                         if l.strip() and not l.strip().startswith("#")]
+        print("Kalıcı ayarlar: " + (", ".join(rules) if rules else "yok"))
         return
 
     only = None
@@ -324,7 +384,7 @@ def main():
     print(f"Proje : {root}")
     print(f"Mod   : {mode}\n")
 
-    if not args.summary:
+    if args.detailed:
         table(["Dosya", "Dil", "Satır", "Kod", "Yorum", "Boş", "Karakter"],
               [(r, l, fmt(s["lines"]), fmt(s["code"]), fmt(s["comment"]),
                 fmt(s["blank"]), fmt(s["chars"])) for r, l, s in results],
